@@ -1,23 +1,37 @@
 (function () {
+  // GitHub Pages cannot send anti-clickjacking headers (X-Frame-Options /
+  // frame-ancestors), so refuse to run embedded in another page instead.
+  if (window.top !== window.self) { window.top.location = window.location; }
+
   const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: { storage: window.sessionStorage, storageKey: 'soulnix-auth-token' },
   });
   SoulAuth.init(supabase);
 
   let currentPartnerProfile = null;
-  let partnerConversationKey = null;
   let currentPartnerNickname = '';
   let currentChatAutoDelete = true;
   let chatBackgroundUrl = null;
   let loadingChat = false;
   const queuedChatMessages = [];
-  let statusAutoAdvanceTimer = null;
   const renderedMessageGroups = new Set();
   const messageRowsByGroup = new Map();
   const messageDataByGroup = new Map();
   const pendingMessageReceipts = new Map();
-  let statusProfilesById = new Map();
-  let statusTrayRenderId = 0;
+  let statusRenderId = 0;
+  let statusViewerToken = 0;
+  let activeTab = 'chats';
+  let presenceTimer = null;
+  let composerMedia = null;
+  let composerBg = 'grape';
+  const STATUS_DURATION_MS = 15000;
+  const STATUS_BG = {
+    grape: 'linear-gradient(135deg, #7B68EE, #4C4189)',
+    teal: 'linear-gradient(135deg, #0FA3A3, #086969)',
+    sunset: 'linear-gradient(135deg, #FF7E5F, #B3413B)',
+    forest: 'linear-gradient(135deg, #38A169, #1D5E3F)',
+    night: 'linear-gradient(135deg, #2D3748, #12161F)',
+  };
 
   const $ = (sel) => document.querySelector(sel);
   function showScreen(id) { document.querySelectorAll('.screen').forEach(s => s.classList.remove('active')); $(id).classList.add('active'); }
@@ -30,6 +44,53 @@
   }
   function showSpinner(show) { $('#spinner').classList.toggle('show', show); }
   function initials(username) { return (username || '?').slice(0, 2).toUpperCase(); }
+
+  // ---- presence ("last online") ----
+  // A persisted heartbeat: the chat list reads profiles.last_seen_at, so
+  // the partner's app must keep refreshing it while the tab is open.
+  async function updatePresence() {
+    const session = SoulAuth.current();
+    if (!session) return;
+    try {
+      await supabase.from('profiles')
+        .update({ last_seen_at: new Date().toISOString() })
+        .eq('id', session.user.id);
+    } catch (_) { /* presence is best-effort */ }
+  }
+  function startPresence() {
+    updatePresence();
+    if (presenceTimer) clearInterval(presenceTimer);
+    presenceTimer = setInterval(() => {
+      if (document.visibilityState === 'visible') updatePresence();
+    }, 30000);
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && SoulAuth.current()) updatePresence();
+  });
+
+  function fmtRelative(iso) {
+    const minutes = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+    if (minutes < 1) return 'just now';
+    if (minutes < 60) return `${minutes} min ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours} hr ago`;
+    const days = Math.floor(hours / 24);
+    return days === 1 ? 'yesterday' : `${days} days ago`;
+  }
+  function presenceLabel(lastSeenAt) {
+    if (!lastSeenAt) return 'offline';
+    const online = Date.now() - new Date(lastSeenAt).getTime() < 65000;
+    return online ? 'online' : `last online ${fmtRelative(lastSeenAt)}`;
+  }
+
+  function loadAvatarInto(container, path, username) {
+    container.innerHTML = path ? '<img alt="">' : initials(username);
+    if (!path) return;
+    supabase.storage.from('encrypted-media').download(path).then(({ data }) => {
+      const image = container.querySelector('img');
+      if (data && image) image.src = URL.createObjectURL(data);
+    }).catch(() => { /* avatar is decorative here */ });
+  }
 
   // ---- session restore ----
   // The Supabase session survives a page reload in sessionStorage, but the
@@ -78,7 +139,8 @@
     }
     showScreen('#screen-home');
     SoulChat.subscribeHome();
-    renderRecentChats();
+    startPresence();
+    switchTab('chats');
   }
 
   async function renderRecentChats(chats) {
@@ -114,18 +176,18 @@
         const name = document.createElement('span');
         name.className = 'recent-chat-name';
         name.textContent = profile.chatNickname || '@' + profile.username;
-        const activity = document.createElement('span');
-        activity.className = 'recent-chat-time';
-        activity.textContent = `@${profile.username} - ${new Date(profile.lastMessageAt).toLocaleString([], {
-          month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-        })}`;
-        details.append(name, activity);
+        // WhatsApp-style presence line under the username instead of the
+        // old "@username - date" preview.
+        const presence = document.createElement('span');
+        presence.className = 'recent-chat-time recent-chat-presence';
+        presence.textContent = presenceLabel(profile.last_seen_at);
+        presence.classList.toggle('online', presence.textContent === 'online');
+        details.append(name, presence);
         item.append(avatar, details);
         item.onclick = () => enterChat(profile);
         list.appendChild(item);
       }
       if (!recentChats.length) empty.hidden = false;
-      renderStatusTray(recentChats).catch(err => toast('Could not load statuses: ' + err.message));
     } catch (err) {
       list.textContent = 'Could not load recent chats.';
       empty.hidden = true;
@@ -133,95 +195,158 @@
     }
   }
 
-  async function renderStatusTray(profiles) {
-    const renderId = ++statusTrayRenderId;
-    const recipient = $('#status-recipient');
-    const items = $('#partner-status-row');
-    statusProfilesById = new Map(profiles.map(profile => [profile.id, profile]));
-    recipient.innerHTML = '<option value="">Choose a recent chat partner</option>';
-    items.innerHTML = '';
-    for (const profile of profiles) {
-      const option = document.createElement('option');
-      option.value = profile.id;
-      option.textContent = `@${profile.username}`;
-      recipient.appendChild(option);
-    }
-
-    $('#btn-post-text-status').disabled = profiles.length === 0;
-    $('#btn-upload-status').disabled = profiles.length === 0;
-    if (!profiles.length) {
-      items.textContent = 'Start a chat before sharing a status.';
-      return;
-    }
-
-    await SoulStatus.cleanupExpired();
-    const statusItems = [];
-    for (const profile of profiles) {
-      const key = await SoulChat.getConversationKeyForProfile(profile);
-      const statuses = await SoulStatus.fetchStatusesFor(profile, key);
-      if (statuses.length) statusItems.push({ profile, key, statuses });
-    }
-    if (renderId !== statusTrayRenderId) return;
-    if (!statusItems.length) {
-      items.textContent = 'No new status updates from your chat partners.';
-      return;
-    }
-    for (const { profile, key, statuses } of statusItems) {
-      const unseen = statuses.some(status => !status.viewedAt);
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'status-item';
-      button.setAttribute('aria-label', `View @${profile.username}'s status`);
-      const ring = document.createElement('span');
-      ring.className = `status-ring ${unseen ? '' : 'seen'}`;
-      ring.textContent = initials(profile.username);
-      const name = document.createElement('span');
-      name.className = 'status-item-name';
-      name.textContent = `@${profile.username}`;
-      button.append(ring, name);
-      button.onclick = () => {
-        SoulStatus.setPartner(profile, key);
-        openStatusViewer(statuses, profile.username);
-      };
-      items.appendChild(button);
+  // ===================== TABS (Chats / Status) =====================
+  function switchTab(tab) {
+    activeTab = tab;
+    $('#tab-chats').classList.toggle('active', tab === 'chats');
+    $('#tab-status').classList.toggle('active', tab === 'status');
+    $('#tab-status').classList.remove('has-new');
+    if (tab === 'chats') {
+      showScreen('#screen-home');
+      renderRecentChats();
+    } else {
+      showScreen('#screen-status');
+      renderStatusScreen();
     }
   }
+  $('#tab-chats').onclick = () => switchTab('chats');
+  $('#tab-status').onclick = () => switchTab('status');
 
-  function selectedStatusProfile() {
-    const profile = statusProfilesById.get($('#status-recipient').value);
-    if (!profile) throw new Error('Choose a recent chat partner first.');
-    return profile;
-  }
+  // ===================== STATUS (WhatsApp-style) =====================
+  // "My status" opens the composer. Below it, one row per chat partner
+  // who posted an update; tapping a row opens the 15-second viewer.
+  async function renderStatusScreen() {
+    const renderId = ++statusRenderId;
+    const updates = $('#status-updates');
+    updates.innerHTML = '';
+    const myProfile = SoulAuth.current().profile;
+    loadAvatarInto($('#my-status-avatar'), myProfile.avatar_url, myProfile.username);
 
-  async function prepareStatusTarget() {
-    const profile = selectedStatusProfile();
-    const key = await SoulChat.getConversationKeyForProfile(profile);
-    SoulStatus.setPartner(profile, key);
-    return profile;
-  }
-
-  async function refreshStatusTray() {
-    renderStatusTray(await SoulChat.fetchRecentChats())
-      .catch(err => toast('Could not refresh statuses: ' + err.message));
-  }
-
-  $('#btn-post-text-status').onclick = async () => {
-    const text = $('#status-text').value.trim();
-    if (!text) { toast('Write a status first.'); return; }
-    showSpinner(true);
     try {
-      const profile = await prepareStatusTarget();
-      await SoulStatus.postText(text);
-      $('#status-text').value = '';
-      toast(`Status shared with @${profile.username} for 24 hours.`);
-      await refreshStatusTray();
+      await SoulStatus.cleanupExpired();
+      const chats = await SoulChat.fetchRecentChats();
+      let ownCount = 0;
+      let ownLatest = null;
+      const groups = [];
+      for (const profile of chats) {
+        const key = await SoulChat.getConversationKeyForProfile(profile);
+        const own = await SoulStatus.fetchOwnStatusesFor(profile);
+        ownCount += own.length;
+        if (own.length) ownLatest = own[own.length - 1].createdAt;
+        const theirs = await SoulStatus.fetchStatusesFor(profile, key);
+        if (theirs.length) groups.push({ profile, key, statuses: theirs });
+      }
+      if (renderId !== statusRenderId) return;
+
+      const subtitle = $('#my-status-subtitle');
+      subtitle.textContent = ownCount
+        ? `${ownCount} update${ownCount > 1 ? 's' : ''} · ${fmtRelative(ownLatest)}`
+        : 'Tap to add a status update';
+
+      const heading = $('#status-updates-heading');
+      const empty = $('#status-updates-empty');
+      heading.hidden = !groups.length;
+      empty.hidden = !!groups.length;
+
+      for (const { profile, key, statuses } of groups) {
+        const unseen = statuses.some(status => !status.viewedAt);
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'status-update-row';
+        row.setAttribute('aria-label', `View @${profile.username}'s status`);
+        const ring = document.createElement('span');
+        ring.className = `status-ring ${unseen ? '' : 'seen'}`;
+        loadAvatarInto(ring, profile.avatar_url, profile.username);
+        const details = document.createElement('span');
+        details.className = 'status-row-details';
+        const name = document.createElement('span');
+        name.className = 'status-row-title';
+        name.textContent = '@' + profile.username;
+        const when = document.createElement('span');
+        when.className = 'status-row-subtitle';
+        when.textContent = `${statuses.length} update${statuses.length > 1 ? 's' : ''} · ${fmtRelative(statuses[statuses.length - 1].createdAt)}`;
+        details.append(name, when);
+        row.append(ring, details);
+        row.onclick = () => openStatusViewer(profile.username, key, statuses);
+        updates.appendChild(row);
+      }
     } catch (err) {
-      toast('Could not post status: ' + err.message);
-    } finally { showSpinner(false); }
+      toast('Could not load statuses: ' + err.message);
+    }
+  }
+
+  // ---- composer: text status by default; attaching media turns the
+  // typed text into its optional caption. ----
+  const composerPreview = $('#status-preview');
+  const composerText = $('#status-composer-text');
+  const composerCaption = $('#status-composer-caption');
+  const composerMediaHolder = $('#status-media-holder');
+
+  function buildSwatches() {
+    const wrap = $('#status-swatches');
+    wrap.innerHTML = '';
+    for (const [name, css] of Object.entries(STATUS_BG)) {
+      const swatch = document.createElement('button');
+      swatch.type = 'button';
+      swatch.className = `swatch ${name === composerBg ? 'active' : ''}`;
+      swatch.dataset.bg = name;
+      swatch.setAttribute('aria-label', `Background: ${name}`);
+      swatch.style.background = css;
+      wrap.appendChild(swatch);
+    }
+  }
+
+  function setComposerMode(media) {
+    composerMedia = media;
+    composerPreview.classList.toggle('textmode', !media);
+    composerText.hidden = !!media;
+    composerCaption.hidden = !media;
+    $('#status-swatches').hidden = !!media;
+    composerMediaHolder.innerHTML = '';
+    composerMediaHolder.hidden = !media;
+    composerPreview.style.background = media ? '' : (STATUS_BG[composerBg] || STATUS_BG.grape);
+    if (media) {
+      const tag = document.createElement(media.kind === 'video' ? 'video' : 'img');
+      if (media.kind === 'video') { tag.controls = true; tag.muted = true; }
+      tag.src = media.url;
+      composerMediaHolder.appendChild(tag);
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.id = 'btn-status-remove-media';
+      remove.setAttribute('aria-label', 'Remove photo or video');
+      remove.textContent = '\u2715';
+      remove.onclick = () => {
+        URL.revokeObjectURL(media.url);
+        composerText.value = composerCaption.value;
+        composerCaption.value = '';
+        setComposerMode(null);
+        buildSwatches();
+      };
+      composerMediaHolder.appendChild(remove);
+    }
+  }
+
+  function openStatusComposer() {
+    composerText.value = '';
+    composerCaption.value = '';
+    composerBg = 'grape';
+    buildSwatches();
+    setComposerMode(null);
+    showScreen('#screen-status-composer');
+  }
+  $('#my-status-row').onclick = openStatusComposer;
+  $('#btn-composer-back').onclick = () => switchTab('status');
+
+  $('#status-swatches').onclick = (event) => {
+    const swatch = event.target.closest('.swatch');
+    if (!swatch) return;
+    composerBg = swatch.dataset.bg;
+    buildSwatches();
+    composerPreview.style.background = STATUS_BG[composerBg] || STATUS_BG.grape;
   };
 
-  $('#btn-upload-status').onclick = () => $('#status-file-input').click();
-  $('#status-file-input').onchange = async (event) => {
+  $('#btn-status-attach').onclick = () => $('#status-file-input').click();
+  $('#status-file-input').onchange = (event) => {
     const file = event.target.files[0];
     event.target.value = '';
     if (!file) return;
@@ -234,14 +359,32 @@
       toast(`File is too large (maximum ${maxSize / (1024 * 1024)} MB).`);
       return;
     }
+    // Whatever text was typed for a text status becomes the caption.
+    const media = {
+      file,
+      kind: file.type.startsWith('video/') ? 'video' : 'image',
+      url: URL.createObjectURL(file),
+    };
+    composerCaption.value = composerText.value;
+    composerText.value = '';
+    setComposerMode(media);
+  };
+
+  $('#btn-status-post').onclick = async () => {
+    const caption = composerCaption.value.trim();
+    const text = composerText.value.trim();
+    const payload = composerMedia
+      ? { file: composerMedia.file, kind: composerMedia.kind, text: caption }
+      : { text, bg: composerBg };
+    if (!composerMedia && !text) { toast('Write a status first.'); return; }
     showSpinner(true);
     try {
-      const profile = await prepareStatusTarget();
-      await SoulStatus.postMedia(file, file.type.startsWith('video/') ? 'video' : 'image');
-      toast(`Status shared with @${profile.username} for 24 hours.`);
-      await refreshStatusTray();
+      const partners = await SoulChat.fetchRecentChats();
+      const count = await SoulStatus.postToPartners(partners, payload);
+      toast(`Status shared with ${count} chat partner${count > 1 ? 's' : ''} for 24 hours.`);
+      switchTab('status');
     } catch (err) {
-      toast('Could not upload status: ' + err.message);
+      toast('Could not post status: ' + err.message);
     } finally { showSpinner(false); }
   };
 
@@ -280,8 +423,16 @@
     catch (err) { toast('Upload failed: ' + err.message); } finally { showSpinner(false); }
   };
 
-  $('#btn-logout').onclick = async () => { SoulChat.closeConversation(); await SoulAuth.logOut(); showScreen('#screen-auth'); };
-  $('#btn-back-home-2').onclick = () => showScreen('#screen-home');
+  async function doLogout() {
+    SoulChat.closeConversation();
+    if (presenceTimer) { clearInterval(presenceTimer); presenceTimer = null; }
+    await SoulAuth.logOut();
+    showScreen('#screen-auth');
+  }
+  $('#btn-logout').onclick = doLogout;
+  $('#btn-logout-2').onclick = doLogout;
+  $('#btn-settings-2').onclick = () => { renderSettings(); showScreen('#screen-settings'); };
+  $('#btn-back-home-2').onclick = () => switchTab(activeTab);
   $('#btn-find').onclick = findAndOpenChat;
 
   async function findAndOpenChat() {
@@ -299,13 +450,17 @@
   // ===================== CHAT =====================
   $('#btn-back-home').onclick = () => {
     SoulChat.closeConversation();
-    showScreen('#screen-home');
     SoulChat.subscribeHome();
-    renderRecentChats();
+    switchTab('chats');
   };
 
-  document.addEventListener('soul:recent-chats-updated', (e) => renderRecentChats(e.detail));
-  document.addEventListener('soul:statuses-updated', () => refreshStatusTray());
+  document.addEventListener('soul:recent-chats-updated', (e) => {
+    if ($('#screen-home').classList.contains('active')) renderRecentChats(e.detail);
+  });
+  document.addEventListener('soul:statuses-updated', () => {
+    if ($('#screen-status').classList.contains('active')) renderStatusScreen();
+    else $('#tab-status').classList.add('has-new');
+  });
   $('#chat-avatar').addEventListener('keydown', (event) => {
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
@@ -344,8 +499,6 @@
     showSpinner(true);
     try {
       const history = await SoulChat.openConversationWith(profile);
-      partnerConversationKey = SoulChat.getConversationKey();
-      SoulStatus.setPartner(profile, partnerConversationKey);
 
       currentChatAutoDelete = await SoulChat.getAutoDelete();
       currentPartnerNickname = await SoulChat.getNickname();
@@ -672,76 +825,103 @@
     }
   };
 
-  // ===================== STATUS (story) =====================
-  function openStatusViewer(statuses, username) {
+  // ===================== STATUS VIEWER =====================
+  // Instagram/WhatsApp style: full-screen, one progress segment per
+  // update, tap left/right to move. Every update shows for 15 seconds;
+  // videos are also cut off at 15 seconds (a shorter video's own
+  // "ended" event advances first).
+  function openStatusViewer(username, key, statuses) {
+    const token = ++statusViewerToken;
     let index = 0;
-    const viewer = $('#status-viewer'); const progress = $('#status-progress'); const content = $('#status-content');
-    $('#status-title').textContent = `@${username}'s status`;
+    let advanceTimer = null;
+    const viewer = $('#status-viewer');
+    const progress = $('#status-progress');
+    const content = $('#status-content');
+    $('#status-title').textContent = '@' + username;
     progress.innerHTML = statuses.map(() => '<div class="seg"><div class="fill"></div></div>').join('');
     viewer.classList.add('active');
 
-    function animateFill(durationMs) {
-      const fill = progress.querySelectorAll('.seg')[index]?.querySelector('.fill');
-      if (!fill) return;
-      fill.style.transition = `width ${durationMs}ms linear`;
-      requestAnimationFrame(() => { fill.style.width = '100%'; });
-    }
-    function resetFills() {
+    function stopTimer() { clearTimeout(advanceTimer); advanceTimer = null; }
+    function setFills() {
       progress.querySelectorAll('.seg').forEach((seg, i) => {
         const fill = seg.querySelector('.fill');
         fill.style.transition = 'none';
         fill.style.width = i < index ? '100%' : '0%';
       });
     }
-
-    async function showCurrent() {
-      clearTimeout(statusAutoAdvanceTimer);
-      content.innerHTML = '';
-      const s = statuses[index];
-      resetFills();
-      try {
-        await SoulStatus.markViewed(s.id);
-      } catch (err) {
-        toast('Could not mark status as seen: ' + err.message);
-      }
-      if (s.kind === 'text') {
-        content.textContent = s.text;
-        animateFill(5000);
-        statusAutoAdvanceTimer = setTimeout(next, 5000);
-      } else {
-        const tag = document.createElement(s.kind === 'video' ? 'video' : 'img');
-        if (s.kind === 'video') {
-          // Let the video play to its end — the old 5-second timer cut
-          // every clip off mid-playback. Images and text still advance
-          // automatically after 5 seconds.
-          tag.controls = true;
-          tag.autoplay = true;
-          tag.onended = next;
-        }
-        content.appendChild(tag);
-        try {
-          const buf = await SoulStatus.downloadAndDecryptMedia(s.storagePath, s.fileIv);
-          tag.src = URL.createObjectURL(new Blob([buf], { type: s.kind === 'video' ? 'video/mp4' : 'image/jpeg' }));
-          if (s.kind === 'image') {
-            animateFill(5000);
-            statusAutoAdvanceTimer = setTimeout(next, 5000);
-          }
-        } catch (err) {
-          content.textContent = '[update unavailable]';
-          toast('Could not load status: ' + err.message);
-          animateFill(5000);
-          statusAutoAdvanceTimer = setTimeout(next, 5000);
-        }
-      }
+    function runFill() {
+      const fill = progress.querySelectorAll('.seg')[index]?.querySelector('.fill');
+      if (!fill) return;
+      fill.style.transition = `width ${STATUS_DURATION_MS}ms linear`;
+      requestAnimationFrame(() => { fill.style.width = '100%'; });
     }
-    function next() { index++; if (index >= statuses.length) { closeViewer(); return; } showCurrent(); }
+    function advance(step) {
+      const nextIndex = index + step;
+      if (nextIndex >= statuses.length) { closeViewer(); return; }
+      if (nextIndex < 0) return;
+      index = nextIndex;
+      showCurrent();
+    }
+    function scheduleNext() {
+      runFill();
+      advanceTimer = setTimeout(() => advance(1), STATUS_DURATION_MS);
+    }
+    async function showCurrent() {
+      stopTimer();
+      content.innerHTML = '';
+      content.style.background = '';
+      const s = statuses[index];
+      setFills();
+      $('#status-time').textContent = fmtRelative(s.createdAt);
+      try { await SoulStatus.markViewed(s.id); } catch (_) { /* viewing still proceeds */ }
+      if (s.kind === 'text') {
+        content.style.background = STATUS_BG[s.bg] || STATUS_BG.grape;
+        const text = document.createElement('div');
+        text.className = 'story-text';
+        text.textContent = s.text ?? '';
+        content.appendChild(text);
+        scheduleNext();
+        return;
+      }
+      const tag = document.createElement(s.kind === 'video' ? 'video' : 'img');
+      if (s.kind === 'video') {
+        tag.autoplay = true;
+        tag.playsInline = true;
+        tag.onended = () => advance(1);
+      }
+      content.appendChild(tag);
+      try {
+        const buf = await SoulStatus.downloadAndDecryptMedia(key, s.storagePath, s.fileIv);
+        tag.src = URL.createObjectURL(new Blob([buf], { type: s.kind === 'video' ? 'video/mp4' : 'image/jpeg' }));
+        if (s.kind === 'video') {
+          tag.play().catch(() => { tag.muted = true; tag.play().catch(() => {}); });
+        }
+      } catch (err) {
+        content.textContent = '[update unavailable]';
+        toast('Could not load status: ' + err.message);
+        scheduleNext();
+        return;
+      }
+      if (s.caption) {
+        const caption = document.createElement('div');
+        caption.className = 'story-caption';
+        caption.textContent = s.caption;
+        content.appendChild(caption);
+      }
+      scheduleNext();
+    }
     function closeViewer() {
-      clearTimeout(statusAutoAdvanceTimer);
+      if (token !== statusViewerToken) return;
+      stopTimer();
       viewer.classList.remove('active');
       content.innerHTML = '';
-      refreshStatusTray();
+      content.style.background = '';
+      renderStatusScreen();
     }
-    $('#status-close').onclick = closeViewer; showCurrent();
+    $('#status-close').onclick = closeViewer;
+    $('#status-next').onclick = () => advance(1);
+    $('#status-prev').onclick = () => advance(-1);
+    showCurrent();
   }
 
   // ===================== SETTINGS =====================
