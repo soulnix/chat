@@ -71,7 +71,7 @@ const SoulChat = (() => {
     const partnerIds = [...latestByPartner.keys()];
     if (!partnerIds.length) return [];
     const { data: profiles, error: profilesError } = await supabase.from('profiles')
-      .select('id, username, public_key, retain_messages, avatar_url')
+      .select('id, username, public_key, retain_messages, avatar_url, last_seen_at')
       .in('id', partnerIds);
     if (profilesError) throw profilesError;
     const { data: preferences, error: preferencesError } = await supabase.from('chat_preferences')
