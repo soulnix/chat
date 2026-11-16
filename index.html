@@ -4,6 +4,12 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="robots" content="noindex" />
+<!-- GitHub Pages cannot set HTTP response headers, so the
+     Content-Security-Policy is delivered as a meta tag instead.
+     (frame-ancestors is the one directive that only works as an HTTP
+     header — the frame-buster check in js/app.js covers that gap.) -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self' https://*.supabase.co wss://*.supabase.co; object-src 'none'; base-uri 'none'; form-action 'self'" />
 <title>SoulNix Chat</title>
 <link rel="stylesheet" href="css/style.css" />
 </head>
@@ -33,40 +39,20 @@
       <div class="avatar" id="home-avatar" title="Change Profile Picture">?</div>
       <div style="flex:1">
         <div class="title" id="home-username">@username</div>
-        <div class="subtitle">SoulNix</div>
       </div>
       <button class="icon-btn" id="btn-settings" title="Settings">&#9881;</button>
       <button class="icon-btn" id="btn-logout" title="Log out">&#10060;</button>
     </header>
-    <div class="home-body" style="padding: 20px; display: flex; flex-direction: column; gap: 20px;">
+    <div class="home-body tabbed-body">
       <div class="find-user-box inset" style="display: flex; gap: 10px; padding: 10px;">
         <input type="text" id="find-username" placeholder="Find username..." style="box-shadow: none; padding: 10px;" />
         <button class="primary" id="btn-find">Chat</button>
       </div>
       <div class="error-text" id="find-error"></div>
-      
-      <section class="status-tray" aria-label="Status updates">
-        <div class="status-tray-heading">
-          <h2 class="section-title">Status</h2>
-          <span class="subtitle">Visible to the chat partner you choose · expires in 24 hours</span>
-        </div>
-        <select id="status-recipient" aria-label="Choose who can see your status">
-          <option value="">Choose a recent chat partner</option>
-        </select>
-        <div class="status-compose-row">
-          <input type="text" id="status-text" maxlength="280" placeholder="Write a text status..." />
-          <button class="primary" id="btn-post-text-status">Post</button>
-        </div>
-        <input type="file" id="status-file-input" accept="image/*,video/*" hidden />
-        <button id="btn-upload-status">Upload photo or video</button>
-        <div class="status-items" id="partner-status-row"></div>
-      </section>
 
       <h2 class="section-title">Chats</h2>
       <div class="recent-chats" id="recent-chats"></div>
-      <div class="empty-state" id="recent-chats-empty" style="text-align: center; color: var(--neu-text); margin-top: 12px;">
-        Type a username to start chatting.
-      </div>
+      <div class="empty-state" id="recent-chats-empty">Type a username to start chatting.</div>
     </div>
   </div>
 
@@ -103,6 +89,49 @@
     </div>
   </div>
 
+  <!-- STATUS (tab) -->
+  <div id="screen-status" class="screen">
+    <header>
+      <div class="title">Status</div>
+      <button class="icon-btn" id="btn-settings-2" title="Settings">&#9881;</button>
+      <button class="icon-btn" id="btn-logout-2" title="Log out">&#10060;</button>
+    </header>
+    <div class="home-body tabbed-body">
+      <button class="status-my-row" id="my-status-row" type="button" aria-label="Add a status update">
+        <span class="recent-avatar my-status-avatar" id="my-status-avatar">?</span>
+        <span class="status-row-details">
+          <span class="status-row-title">My status</span>
+          <span class="status-row-subtitle" id="my-status-subtitle">Tap to add a status update</span>
+        </span>
+        <span class="my-status-plus" aria-hidden="true">+</span>
+      </button>
+      <h2 class="section-title" id="status-updates-heading" hidden>Recent updates</h2>
+      <div class="status-updates" id="status-updates"></div>
+      <div class="empty-state" id="status-updates-empty" hidden>No status updates from your chat partners yet.</div>
+    </div>
+  </div>
+
+  <!-- STATUS COMPOSER: text status by default; attaching a photo or
+       video turns the typed text into its optional caption. -->
+  <div id="screen-status-composer" class="screen">
+    <header>
+      <button class="icon-btn" id="btn-composer-back">&#8592;</button>
+      <div class="title">Add status</div>
+    </header>
+    <div class="composer-preview textmode" id="status-preview">
+      <textarea id="status-composer-text" maxlength="280" rows="5" placeholder="Write a text status..."></textarea>
+      <div id="status-media-holder" hidden></div>
+      <input type="text" id="status-composer-caption" maxlength="280" placeholder="Add a caption... (optional)" hidden />
+    </div>
+    <div class="composer-swatches" id="status-swatches"></div>
+    <div class="composer-actions">
+      <input type="file" id="status-file-input" accept="image/*,video/*" hidden />
+      <button id="btn-status-attach">Photo / video</button>
+      <button class="primary" id="btn-status-post">Post</button>
+    </div>
+    <p class="hint-text composer-hint">Updates disappear after 24 hours. Text and photos show for 15 seconds per view.</p>
+  </div>
+
   <!-- PROFILE VIEWER -->
   <div id="profile-viewer">
     <header>
@@ -121,11 +150,16 @@
 
   <div class="story-viewer" id="status-viewer" role="dialog" aria-modal="true" aria-label="Status viewer">
     <header>
-      <div class="title" id="status-title">Status</div>
       <div class="status-progress" id="status-progress"></div>
-      <button class="icon-btn" id="status-close" aria-label="Close status">&#10005;</button>
+      <div class="story-head-row">
+        <span class="story-head-name" id="status-title"></span>
+        <span class="story-head-time" id="status-time"></span>
+        <button class="icon-btn" id="status-close" aria-label="Close status">&#10005;</button>
+      </div>
     </header>
-    <div class="status-content" id="status-content"></div>
+    <div class="story-stage" id="status-content"></div>
+    <button class="story-tap-zone left" id="status-prev" aria-label="Previous update"></button>
+    <button class="story-tap-zone right" id="status-next" aria-label="Next update"></button>
   </div>
 
   <div class="message-info-viewer" id="message-info-viewer" role="dialog" aria-modal="true" aria-labelledby="message-info-title">
@@ -157,6 +191,19 @@
       </div>
     </div>
   </div>
+
+  <!-- Bottom tab bar: visible only on the Chats and Status tabs
+       (pure CSS via sibling selectors, see style.css). -->
+  <nav id="tab-bar" aria-label="Main sections">
+    <button class="tab-btn active" id="tab-chats" type="button">
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+      <span class="tab-label">Chats</span>
+    </button>
+    <button class="tab-btn" id="tab-status" type="button">
+      <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke-dasharray="4.5 3.5"/></svg>
+      <span class="tab-label">Status</span>
+    </button>
+  </nav>
 
   <div class="toast" id="toast"></div>
   <div class="spinner-overlay" id="spinner">Working...</div>
