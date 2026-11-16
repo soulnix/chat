@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex" />
+<!-- GitHub Pages cannot set HTTP response headers, so the
+     Content-Security-Policy is delivered as a meta tag instead.
+     (frame-ancestors is the one directive that only works as an HTTP
+     header — the frame-buster check in js/app.js covers that gap.) -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self' https://*.supabase.co wss://*.supabase.co; object-src 'none'; base-uri 'none'; form-action 'self'" />
+<title>SoulNix Chat</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- AUTH -->
+  <div id="screen-auth" class="screen active">
+    <h1>SoulNix</h1>
+    <p class="tagline">Private, end-to-end encrypted.</p>
+    <div class="auth-tabs">
+      <button id="tab-login" class="active">Log in</button>
+      <button id="tab-signup">Create account</button>
+    </div>
+    <form class="auth-form" id="auth-form">
+      <input type="text" id="auth-username" placeholder="Username" autocomplete="username" required />
+      <input type="password" id="auth-passphrase" placeholder="Passphrase" autocomplete="current-password" required />
+      <div class="error-text" id="auth-error"></div>
+      <button type="submit" class="primary" id="auth-submit">Log in</button>
+      <p class="hint-text">If you forget your passphrase, there is no recovery.</p>
+    </form>
+  </div>
+
+  <!-- HOME -->
+  <div id="screen-home" class="screen">
+    <header>
+      <div class="avatar" id="home-avatar" title="Change Profile Picture">?</div>
+      <div style="flex:1">
+        <div class="title" id="home-username">@username</div>
+        <div class="subtitle">SoulNix</div>
+      </div>
+      <button class="icon-btn" id="btn-settings" title="Settings">&#9881;</button>
+      <button class="icon-btn" id="btn-logout" title="Log out">&#10060;</button>
+    </header>
+    <div class="home-body" style="padding: 20px; display: flex; flex-direction: column; gap: 20px;">
+      <div class="find-user-box inset" style="display: flex; gap: 10px; padding: 10px;">
+        <input type="text" id="find-username" placeholder="Find username..." style="box-shadow: none; padding: 10px;" />
+        <button class="primary" id="btn-find">Chat</button>
+      </div>
+      <div class="error-text" id="find-error"></div>
+      
+      <section class="status-tray" aria-label="Status updates">
+        <div class="status-tray-heading">
+          <h2 class="section-title">Status</h2>
+          <span class="subtitle">Visible to the chat partner you choose · expires in 24 hours</span>
+        </div>
+        <select id="status-recipient" aria-label="Choose who can see your status">
+          <option value="">Choose a recent chat partner</option>
+        </select>
+        <div class="status-compose-row">
+          <input type="text" id="status-text" maxlength="280" placeholder="Write a text status..." />
+          <button class="primary" id="btn-post-text-status">Post</button>
+        </div>
+        <input type="file" id="status-file-input" accept="image/*,video/*" hidden />
+        <button id="btn-upload-status">Upload photo or video</button>
+        <div class="status-items" id="partner-status-row"></div>
+      </section>
+
+      <h2 class="section-title">Chats</h2>
+      <div class="recent-chats" id="recent-chats"></div>
+      <div class="empty-state" id="recent-chats-empty" style="text-align: center; color: var(--neu-text); margin-top: 12px;">
+        Type a username to start chatting.
+      </div>
+    </div>
+  </div>
+
+  <!-- CHAT -->
+  <div id="screen-chat" class="screen">
+    <div id="chat-screen-bg"></div>
+    <header>
+      <button class="icon-btn" id="btn-back-home">&#8592;</button>
+      <div class="avatar" id="chat-avatar" role="button" tabindex="0" aria-label="View profile">?</div>
+      <div id="chat-partner-name-box" style="flex:1; cursor: pointer;">
+        <div class="title" id="chat-partner-name">@partner</div>
+        <div class="subtitle" id="chat-retention-note">Auto-delete after 10 min</div>
+      </div>
+      <button class="icon-btn" id="btn-chat-menu" aria-label="Chat options" aria-expanded="false">&#8942;</button>
+    </header>
+
+    <!-- Dropdown Menu -->
+    <div class="dropdown-menu" id="chat-dropdown">
+      <button id="menu-retention" role="switch" aria-checked="false">Auto-delete in this chat: On</button>
+      <button id="menu-bg">Set Chat Background</button>
+      <button id="menu-avatar">Change Profile Picture</button>
+      <button id="menu-clear-chat">Clear chat</button>
+    </div>
+
+    <div class="messages" id="messages"></div>
+
+    <div class="composer">
+      <button class="icon-btn" id="btn-attach">&#128206;</button>
+      <input type="file" id="file-input" accept="image/*,video/*" style="display:none" />
+      <input type="file" id="bg-input" accept="image/*" style="display:none" />
+      <input type="file" id="avatar-input" accept="image/*" style="display:none" />
+      <input type="text" id="msg-input" placeholder="Message..." />
+      <button class="send-btn" id="btn-send">&#10148;</button>
+    </div>
+  </div>
+
+  <!-- PROFILE VIEWER -->
+  <div id="profile-viewer">
+    <header>
+      <button class="icon-btn" id="btn-close-profile" aria-label="Back">&#8592;</button>
+      <div class="title">Profile</div>
+    </header>
+    <div class="profile-header">
+      <div class="avatar" id="profile-avatar">?</div>
+      <h2 id="profile-nickname">@nickname</h2>
+      <p style="color: var(--neu-text);" id="profile-username">@real_username</p>
+      <button class="icon-btn" id="btn-edit-nickname" style="margin-top: 10px; font-size: 12px; width: auto; padding: 0 15px; border-radius: 20px;">Edit Nickname</button>
+    </div>
+    <h3 style="padding: 0 20px; margin-top: 10px;">Shared Media</h3>
+    <div class="profile-media" id="profile-media-grid"></div>
+  </div>
+
+  <div class="story-viewer" id="status-viewer" role="dialog" aria-modal="true" aria-label="Status viewer">
+    <header>
+      <div class="title" id="status-title">Status</div>
+      <div class="status-progress" id="status-progress"></div>
+      <button class="icon-btn" id="status-close" aria-label="Close status">&#10005;</button>
+    </header>
+    <div class="status-content" id="status-content"></div>
+  </div>
+
+  <div class="message-info-viewer" id="message-info-viewer" role="dialog" aria-modal="true" aria-labelledby="message-info-title">
+    <div class="message-info-card">
+      <div class="message-info-heading">
+        <h2 id="message-info-title">Message info</h2>
+        <button class="icon-btn" id="btn-close-message-info" aria-label="Close message info">&#10005;</button>
+      </div>
+      <div id="message-info-content"></div>
+    </div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div id="screen-settings" class="screen">
+    <header>
+      <button class="icon-btn" id="btn-back-home-2">&#8592;</button>
+      <div class="title">Settings</div>
+    </header>
+    <div class="settings-body" style="padding: 20px;">
+      <div class="notice-box inset" style="margin-bottom: 20px;">
+        Messages and shared media are end-to-end encrypted. Profile pictures are visible to signed-in users.
+      </div>
+      <div class="setting-row">
+        <div>
+          <div class="title">Auto-delete default</div>
+          <div class="subtitle">Default for chats until you choose a per-chat setting.</div>
+        </div>
+        <button class="toggle-btn" id="toggle-retention" role="switch" aria-label="Auto-delete messages" aria-checked="true"></button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <div class="spinner-overlay" id="spinner">Working...</div>
+</div>
+
+<!-- Pinned exact version with a subresource-integrity hash, so a
+     compromised CDN or a floating major-version redirect can't swap
+     the app's crypto/library code. -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.0/dist/umd/supabase.min.js"
+        integrity="sha384-gnyZit14c5lnGcarmA166QQjjJXpucw25ogZXuwH3HxxY904zHkBqmxVpelsPorb"
+        crossorigin="anonymous"></script>
+<script src="js/config.js"></script>
+<script src="js/crypto.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/chat.js"></script>
+<script src="js/status.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
