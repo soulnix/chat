@@ -1,8 +1,4 @@
 (function () {
-  // GitHub Pages cannot send anti-clickjacking headers (X-Frame-Options /
-  // frame-ancestors), so refuse to run embedded in another page instead.
-  if (window.top !== window.self) { window.top.location = window.location; }
-
   const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
     auth: { storage: window.sessionStorage, storageKey: 'soulnix-auth-token' },
   });
