@@ -110,22 +110,37 @@ const SoulStatus = (() => {
     return out;
   }
 
-  // My own posted statuses for one partner — metadata only. The Status
-  // screen shows a count; tapping "My status" opens the composer, not
-  // a viewer, so decryption isn't needed here.
-  async function fetchOwnStatusesFor(profile) {
+    // My own posted statuses for one partner — decrypted with the same
+  // conversation key, so the uploader can view their own status too.
+  async function fetchOwnStatusesFor(profile, key) {
     const nowIso = new Date().toISOString();
     const { data, error } = await supabase
       .from('statuses')
-      .select('id, kind, created_at, expires_at, viewed_at, bg')
+      .select('*')
       .eq('owner_id', me.user.id)
       .eq('viewer_id', profile.id)
       .gt('expires_at', nowIso)
       .order('created_at', { ascending: true });
     if (error) throw error;
-    return (data || []).map(mapRow);
+    const out = [];
+    for (const row of data) {
+      const item = mapRow(row);
+      if (row.kind === 'text') {
+        item.text = await SoulCrypto.decryptText(key, row.ciphertext, row.iv);
+      } else {
+        item.storagePath = row.storage_path;
+        item.fileIv = row.iv;
+        if (row.ciphertext) {
+          try { item.caption = await SoulCrypto.decryptText(key, row.ciphertext, row.iv); }
+          catch (_) { item.caption = ''; }
+        } else {
+          item.caption = '';
+        }
+      }
+      out.push(item);
+    }
+    return out;
   }
-
   async function markViewed(statusId) {
     const { error } = await supabase.from('statuses')
       .update({ viewed_at: new Date().toISOString() })
