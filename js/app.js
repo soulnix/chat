@@ -225,18 +225,26 @@
     try {
       await SoulStatus.cleanupExpired();
       const chats = await SoulChat.fetchRecentChats();
-      let ownCount = 0;
+          let ownCount = 0;
       let ownLatest = null;
+      const ownGroups = [];
       const groups = [];
       for (const profile of chats) {
         const key = await SoulChat.getConversationKeyForProfile(profile);
-        const own = await SoulStatus.fetchOwnStatusesFor(profile);
-        ownCount += own.length;
-        if (own.length) ownLatest = own[own.length - 1].createdAt;
+        const own = await SoulStatus.fetchOwnStatusesFor(profile, key);
+        if (own.length) {
+          ownGroups.push({ key, statuses: own });
+          ownCount += own.length;
+          if (!ownLatest || new Date(own[own.length - 1].createdAt) > new Date(ownLatest)) {
+            ownLatest = own[own.length - 1].createdAt;
+          }
+        }
         const theirs = await SoulStatus.fetchStatusesFor(profile, key);
         if (theirs.length) groups.push({ profile, key, statuses: theirs });
       }
       if (renderId !== statusRenderId) return;
+      myOwnGroups = ownGroups;
+      $('#my-status-avatar').classList.toggle('has-status', ownCount > 0);
 
       const subtitle = $('#my-status-subtitle');
       subtitle.textContent = ownCount
@@ -334,7 +342,20 @@
     setComposerMode(null);
     showScreen('#screen-status-composer');
   }
-  $('#my-status-row').onclick = openStatusComposer;
+    // My status row: view my own updates when I have any, otherwise open
+  // the composer. The "+" always opens the composer (upload option).
+  $('#my-status-row').onclick = () => {
+    const items = myOwnGroups.flatMap(group => group.statuses.map(s => ({ ...s, key: group.key })));
+    if (items.length) {
+      openStatusViewer(SoulAuth.current().profile.username, items[0].key, items);
+    } else {
+      openStatusComposer();
+    }
+  };
+  document.querySelector('.my-status-plus').onclick = (e) => {
+    e.stopPropagation();
+    openStatusComposer();
+  };
   $('#btn-composer-back').onclick = () => switchTab('status');
 
   $('#status-swatches').onclick = (event) => {
@@ -891,7 +912,7 @@
       }
       content.appendChild(tag);
       try {
-        const buf = await SoulStatus.downloadAndDecryptMedia(key, s.storagePath, s.fileIv);
+                const buf = await SoulStatus.downloadAndDecryptMedia(s.key || key, s.storagePath, s.fileIv);
         tag.src = URL.createObjectURL(new Blob([buf], { type: s.kind === 'video' ? 'video/mp4' : 'image/jpeg' }));
         if (s.kind === 'video') {
           tag.play().catch(() => { tag.muted = true; tag.play().catch(() => {}); });
