@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SoulNix — one-time setup</title>
+<style>
+  body { background:#0f1115; color:#e8eaf0; font-family: -apple-system, sans-serif; display:flex; justify-content:center; padding:40px 20px; }
+  .box { max-width: 420px; width:100%; }
+  button { background:#6366f1; color:white; border:none; padding:14px 20px; border-radius:10px; font-size:15px; cursor:pointer; width:100%; margin-top:16px; }
+  button:disabled { opacity:0.5; }
+  pre { background:#171a21; padding:14px; border-radius:10px; font-size:13px; white-space:pre-wrap; margin-top:16px; max-height:300px; overflow:auto; }
+  a { color:#8b93ff; }
+</style>
+</head>
+<body>
+<div class="box">
+  <h2>One-time account setup</h2>
+  <p style="color:#ef4444; font-weight:bold;">⚠ SECURITY WARNING — DO NOT DEPLOY THIS FILE.
+  It contains working usernames and passphrases. It now lives OUTSIDE the
+  <code>public</code> folder precisely so it can never end up on Netlify.
+  Run it by opening it locally in a browser (File → Open), never from a
+  live URL — anyone who finds it could log in as these accounts.</p>
+  <p>Creates exactly two accounts — <b>pawan</b> and <b>manu</b>, both with
+  passphrase <code>test12345</code> — using real browser-side encryption
+  key generation, the same as the normal signup form. Click once.</p>
+  <p style="color:#9aa1b2; font-size:13px;">
+  These are demo passphrases. After running this once, log in with each
+  account and CHANGE the passphrase by creating new accounts with strong
+  passphrases (8+ characters), or just use the normal signup form instead.
+  </p>
+  <button id="run">Create both accounts</button>
+  <pre id="log">Waiting...</pre>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="js/config.js"></script>
+<script src="js/crypto.js"></script>
+<script src="js/auth.js"></script>
+<script>
+(function () {
+  const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  SoulAuth.init(db);
+  const log = document.getElementById('log');
+  const btn = document.getElementById('run');
+
+  function write(line) { log.textContent += '\n' + line; }
+
+  btn.onclick = async () => {
+    btn.disabled = true;
+    log.textContent = 'Starting...';
+    const accounts = [
+      { username: 'pawan', passphrase: 'test12345' },
+      { username: 'manu', passphrase: 'test12345' },
+    ];
+    for (const acc of accounts) {
+      try {
+        const taken = await SoulAuth.usernameTaken(acc.username);
+        if (taken) { write(`"${acc.username}" already exists — skipped.`); continue; }
+        await SoulAuth.signUp(acc.username, acc.passphrase);
+        write(`Created "${acc.username}" successfully.`);
+        await db.auth.signOut(); // so the next signUp isn't blocked by an active session
+      } catch (err) {
+        write(`Failed to create "${acc.username}": ${err.message}`);
+      }
+    }
+    write('\nDone. Go to the app and log in with either account.');
+    write('Now delete setup.html from your Netlify deploy.');
+    btn.disabled = false;
+  };
+})();
+</script>
+</body>
+</html>

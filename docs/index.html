@@ -2,8 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<!-- interactive-widget=resizes-content: on Android Chrome the keyboard
+     becomes part of the viewport, so the composer rides above it. -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
 <meta name="robots" content="noindex" />
+<meta name="theme-color" content="#7B68EE" />
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icons/icon-192.png" type="image/png" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
 <!-- GitHub Pages cannot set HTTP response headers, so the
      Content-Security-Policy is delivered as a meta tag instead.
      (frame-ancestors is the one directive that only works as an HTTP
@@ -53,6 +59,10 @@
       <h2 class="section-title">Chats</h2>
       <div class="recent-chats" id="recent-chats"></div>
       <div class="empty-state" id="recent-chats-empty">Type a username to start chatting.</div>
+      <button class="archived-toggle" id="archived-toggle" type="button" hidden>
+        Archived (<span id="archived-count">0</span>) <span class="archived-arrow" aria-hidden="true">▸</span>
+      </button>
+      <div class="recent-chats" id="archived-chats" hidden></div>
     </div>
   </div>
 
@@ -72,20 +82,49 @@
     <!-- Dropdown Menu -->
     <div class="dropdown-menu" id="chat-dropdown">
       <button id="menu-retention" role="switch" aria-checked="false">Auto-delete in this chat: On</button>
+      <button id="menu-duration">Auto-delete duration: 10 min</button>
+      <button id="menu-search">Search in chat</button>
+      <button id="menu-starred">Starred messages</button>
       <button id="menu-bg">Set Chat Background</button>
       <button id="menu-avatar">Change Profile Picture</button>
       <button id="menu-clear-chat">Clear chat</button>
     </div>
 
+    <!-- Search bar -->
+    <div class="search-bar" id="search-bar" hidden>
+      <input type="text" id="search-input" placeholder="Search in this chat..." autocomplete="off" />
+      <button class="icon-btn" id="btn-search-close" aria-label="Close search">&#10005;</button>
+    </div>
+    <div class="search-results" id="search-results" hidden></div>
+
     <div class="messages" id="messages"></div>
 
     <div class="composer">
-      <button class="icon-btn" id="btn-attach">&#128206;</button>
-      <input type="file" id="file-input" accept="image/*,video/*" style="display:none" />
-      <input type="file" id="bg-input" accept="image/*" style="display:none" />
-      <input type="file" id="avatar-input" accept="image/*" style="display:none" />
-      <input type="text" id="msg-input" placeholder="Message..." />
-      <button class="send-btn" id="btn-send">&#10148;</button>
+      <!-- Reply quote shown above the input while a reply is pending -->
+      <div class="reply-bar" id="reply-bar" hidden>
+        <span id="reply-bar-icon" aria-hidden="true">↩️</span>
+        <span class="reply-bar-text" id="reply-bar-text"></span>
+        <button class="icon-btn" id="btn-reply-cancel" aria-label="Cancel reply">&#10005;</button>
+      </div>
+      <div class="emoji-panel-holder"><div id="emoji-panel" hidden></div></div>
+      <div id="composer-main" style="display: flex; align-items: center; gap: 10px; width: 100%;">
+        <button class="icon-btn" id="btn-emoji" aria-label="Emoji">&#128512;</button>
+        <button class="icon-btn" id="btn-attach" aria-label="Attach">&#128206;</button>
+        <button class="icon-btn" id="btn-camera" aria-label="Camera">&#128247;</button>
+        <input type="file" id="file-input" accept="image/*,video/*,audio/*" style="display:none" />
+        <input type="file" id="bg-input" accept="image/*" style="display:none" />
+        <input type="file" id="avatar-input" accept="image/*" style="display:none" />
+        <input type="text" id="msg-input" placeholder="Message..." autocomplete="off" />
+        <button class="send-btn" id="btn-send" hidden aria-label="Send">&#10148;</button>
+        <button class="send-btn mic-btn" id="btn-mic" aria-label="Record voice message">&#127908;</button>
+      </div>
+      <div id="record-bar" hidden style="display: flex; align-items: center; gap: 10px; width: 100%;">
+        <span class="record-dot" aria-hidden="true"></span>
+        <span id="record-timer" class="record-timer">0:00</span>
+        <span class="record-hint">Recording voice message…</span>
+        <button id="btn-record-cancel" type="button">Cancel</button>
+        <button id="btn-record-send" type="button" class="primary">Send</button>
+      </div>
     </div>
   </div>
 
@@ -142,6 +181,7 @@
       <div class="avatar" id="profile-avatar">?</div>
       <h2 id="profile-nickname">@nickname</h2>
       <p style="color: var(--neu-text);" id="profile-username">@real_username</p>
+      <p class="profile-bio" id="profile-bio" hidden></p>
       <button class="icon-btn" id="btn-edit-nickname" style="margin-top: 10px; font-size: 12px; width: auto; padding: 0 15px; border-radius: 20px;">Edit Nickname</button>
     </div>
     <h3 style="padding: 0 20px; margin-top: 10px;">Shared Media</h3>
@@ -160,6 +200,10 @@
     <div class="story-stage" id="status-content"></div>
     <button class="story-tap-zone left" id="status-prev" aria-label="Previous update"></button>
     <button class="story-tap-zone right" id="status-next" aria-label="Next update"></button>
+    <footer class="story-footer">
+      <button id="status-viewers" type="button" class="story-chip" hidden>👁 Views</button>
+      <button id="status-reply" type="button" class="story-chip">↩ Reply to status</button>
+    </footer>
   </div>
 
   <div class="message-info-viewer" id="message-info-viewer" role="dialog" aria-modal="true" aria-labelledby="message-info-title">
@@ -178,9 +222,23 @@
       <button class="icon-btn" id="btn-back-home-2">&#8592;</button>
       <div class="title">Settings</div>
     </header>
-    <div class="settings-body" style="padding: 20px;">
-      <div class="notice-box inset" style="margin-bottom: 20px;">
+    <div class="settings-body" style="padding: 20px; display: flex; flex-direction: column; gap: 16px;">
+      <div class="notice-box inset">
         Messages and shared media are end-to-end encrypted. Profile pictures are visible to signed-in users.
+      </div>
+      <div class="setting-row">
+        <div>
+          <div class="title">Dark mode</div>
+          <div class="subtitle">Easier on the eyes at night.</div>
+        </div>
+        <button class="toggle-btn" id="toggle-theme" role="switch" aria-label="Dark mode" aria-checked="false"></button>
+      </div>
+      <div class="setting-row">
+        <div>
+          <div class="title">Sounds</div>
+          <div class="subtitle">Play a soft tone for sent and received messages.</div>
+        </div>
+        <button class="toggle-btn" id="toggle-sound" role="switch" aria-label="Sounds" aria-checked="true"></button>
       </div>
       <div class="setting-row">
         <div>
@@ -189,7 +247,45 @@
         </div>
         <button class="toggle-btn" id="toggle-retention" role="switch" aria-label="Auto-delete messages" aria-checked="true"></button>
       </div>
+      <div class="setting-row profile-form">
+        <div style="width: 100%;">
+          <div class="title">Your profile</div>
+          <input type="text" id="profile-display-name" maxlength="40" placeholder="Display name (optional)" style="margin-top: 10px;" />
+          <input type="text" id="profile-bio-input" maxlength="160" placeholder="Bio (optional)" style="margin-top: 10px;" />
+          <button class="primary" id="btn-profile-save" style="margin-top: 10px; width: auto; padding: 10px 24px;">Save profile</button>
+        </div>
+      </div>
     </div>
+  </div>
+
+  <!-- STARRED MESSAGES -->
+  <div id="screen-starred" class="screen">
+    <header>
+      <button class="icon-btn" id="btn-starred-back">&#8592;</button>
+      <div class="title">Starred messages</div>
+    </header>
+    <div class="starred-body" id="starred-list">Loading starred messages...</div>
+  </div>
+
+  <!-- ACTION SHEET (message actions, reactions, viewers, forward) -->
+  <div id="sheet-overlay" role="dialog" aria-modal="true">
+    <div class="sheet-card" id="sheet-card"></div>
+  </div>
+
+  <!-- CAMERA -->
+  <div id="camera-modal" role="dialog" aria-modal="true" aria-label="Take a photo">
+    <video id="camera-preview" autoplay playsinline muted></video>
+    <div class="camera-controls">
+      <button class="icon-btn" id="btn-camera-flip" aria-label="Switch camera">&#128260;</button>
+      <button class="capture-btn" id="btn-camera-capture" aria-label="Take photo"></button>
+      <button class="icon-btn" id="btn-camera-close" aria-label="Close camera">&#10005;</button>
+    </div>
+  </div>
+
+  <!-- FULL-SCREEN MEDIA VIEWER -->
+  <div id="media-viewer" role="dialog" aria-modal="true" aria-label="Media viewer">
+    <button class="icon-btn" id="media-viewer-close" aria-label="Close">&#10005;</button>
+    <div id="media-viewer-stage"></div>
   </div>
 
   <!-- Bottom tab bar: visible only on the Chats and Status tabs
@@ -198,6 +294,7 @@
     <button class="tab-btn active" id="tab-chats" type="button">
       <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
       <span class="tab-label">Chats</span>
+      <span class="tab-badge" id="tab-chats-badge" hidden></span>
     </button>
     <button class="tab-btn" id="tab-status" type="button">
       <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke-dasharray="4.5 3.5"/></svg>
@@ -220,6 +317,7 @@
 <script src="js/auth.js"></script>
 <script src="js/chat.js"></script>
 <script src="js/status.js"></script>
+<script src="js/features.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

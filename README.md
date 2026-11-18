@@ -44,12 +44,34 @@ deleted, and clearing also removes the encrypted media files from
 the current account's storage folder. Encrypted media files are
 retained so the other account's copy can keep working when it
 still references the same file.
-On the home screen, choose a recent chat partner to share a text,
-photo, or video status; updates expire after 24 hours. Text and
-photo statuses auto-advance after 5 seconds; a video status plays
-to its end. Message bubbles show one, two, or three green dots for
-sent, delivered, and seen. Tap the dots for exact sent, received,
-and seen times.
+The bottom bar splits the app into two tabs, like WhatsApp mobile:
+**Chats** and **Status**. On the Chats tab you see only your
+conversations, each showing the other person's name with their
+presence underneath ("online" or "last online ..."), plus unread
+badges. On the Status tab, tapping **My status** opens the composer —
+a text status by default; if you attach a photo or video, whatever
+you typed becomes its optional caption, and you can see who viewed
+your updates. Updates are shared with all of your chat partners at
+once and expire after 24 hours; the viewer plays each update for 15
+seconds with tap navigation, and you can reply to a partner's status
+right into your chat with them.
+
+In chats, sent messages show WhatsApp-style ticks (✓ sent,
+✓✓ delivered, blue ✓✓ read; tap for exact times), date separators
+between days, a live "typing…" indicator, and a long-press menu on
+any message with Reply, React (double-tap a bubble for ❤️), Copy,
+Star, Forward, and Delete-for-me. Starred messages are collected on
+their own screen, and chats can be searched. The composer has an
+emoji picker, a camera button that takes photos directly, and a mic
+that records voice notes when the text box is empty. Photos open in
+a full-screen viewer, pasted links become tappable, and soft sounds
+play for sent/received messages (mutable in Settings). Chats can be
+pinned, muted, and archived; the app has a dark mode; and Settings
+lets you set a display name and bio that replace your username
+where shown. Avatars without a photo get a unique gradient color.
+The app is also a PWA: open it in a mobile browser and "Add to Home
+Screen" installs it like a native app with its own icon. (Browser
+notifications were intentionally left out.)
 
 A media message whose encrypted file has already been removed from
 storage (for example by the sender's auto-delete) shows a
@@ -72,10 +94,12 @@ breaking the whole chat load.
    This creates the tables, security rules, and the encrypted
    media storage bucket.
    If you already set up an earlier version, run the updated script
-   again — it is safe to re-run. The current version changes the
-   `send_chat_message_copies` function so each side's auto-delete
-   preference is applied to its own message copy, and tightens the
-   status-table policies.
+   again — it is safe to re-run. The current version adds the
+   `message_reactions` table, the `starred` column and voice-note
+   ('audio') support on `messages`, the `auto_delete_minutes`
+   per-chat duration, and the `display_name`/`bio` profile columns.
+   It also updates the `send_chat_message_copies` function and adds
+   reactions to the realtime publication.
 6. Go to **Authentication → Providers → Email** and turn **off**
    "Confirm email" (since the emails are synthetic/fake, there's
    nothing to confirm). This is under Authentication → Settings in
@@ -167,8 +191,30 @@ to serve the folder as-is (no Jekyll processing).
 - **Site doesn't update right away:** GitHub Pages caches for up
   to 10 minutes; hard-refresh with Ctrl+Shift+R (or clear the tab).
 
-## What changed in this version (bug-fix release)
+## What changed in this version
 
+- **26 new features** (all except browser notifications, by choice):
+  WhatsApp-style ticks, typing indicator, unread badges, date
+  separators, reply-to-message, emoji reactions, long-press message
+  menu (copy/star/forward/delete), chat search, voice notes, photo
+  viewer, emoji picker, camera capture, link chips, editable profile
+  (display name + bio), gradient avatars, pin/mute/archive chats,
+  dark mode, send/receive sounds, status viewers list, reply-to-status,
+  per-chat auto-delete durations (10 min / 1 h / 24 h), starred
+  messages, and PWA install support — plus the mobile viewport fix
+  (100dvh) that stops the message field from hiding behind the
+  browser's URL bar on real phones.
+- Previous bug-fix release notes below.
+
+- WhatsApp-style layout: a bottom bar with **Chats** and **Status**
+  tabs; the header shows only your username (no app name); chat
+  rows show presence ("online" / "last online ...") under the
+  username instead of the old "@username - date" line.
+- Status revamp: the Status tab has a "My status" row that opens a
+  composer (text status by default; attaching a photo/video turns
+  the text into an optional caption), updates are shared with all
+  chat partners at once, and the viewer plays each update for
+  15 seconds with progress bars and tap navigation.
 - `crypto.js`: base64 conversion is chunked — encrypting a large
   photo or video no longer crashes with "Maximum call stack size
   exceeded" (this broke most media at the old 15/50 MB caps).

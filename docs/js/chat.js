@@ -1,6 +1,9 @@
 const SoulChat = (() => {
   let supabase, me, partner = null, conversationKey = null, channel = null, homeChannel = null, partnerAutoDelete = true;
+  let partnerAutoDeleteMinutes = AUTO_DELETE_MINUTES;
   let sweepTimer = null;
+  let typingChannel = null;
+  let lastTypingSent = 0;
   const peerPublicKeyCache = new Map();
 
   function init(client, session) {
@@ -11,7 +14,7 @@ const SoulChat = (() => {
   async function lookupProfileByUsername(username) {
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, username, public_key, retain_messages, avatar_url')
+      .select('id, username, public_key, retain_messages, avatar_url, last_seen_at, display_name, bio')
       .eq('username', username.trim().toLowerCase())
       .maybeSingle();
     if (error) throw error;
@@ -56,8 +59,10 @@ const SoulChat = (() => {
       latestByPartner.set(contact.id, contact.updatedAt);
     }
 
+    const nowIso = new Date().toISOString();
+    const unreadByPartner = new Map();
     const { data: messages, error: messagesError } = await supabase.from('messages')
-      .select('sender_id, receiver_id, created_at')
+      .select('sender_id, receiver_id, created_at, read_at, delete_at')
       .eq('owner_id', me.user.id)
       .order('created_at', { ascending: false })
       .limit(500);
@@ -66,12 +71,16 @@ const SoulChat = (() => {
       const partnerId = message.sender_id === me.user.id ? message.receiver_id : message.sender_id;
       const prior = latestByPartner.get(partnerId);
       if (!prior || new Date(message.created_at) > new Date(prior)) latestByPartner.set(partnerId, message.created_at);
+      // Unread = an incoming copy nobody opened yet (and not swept).
+      if (message.sender_id !== me.user.id && !message.read_at && (!message.delete_at || message.delete_at > nowIso)) {
+        unreadByPartner.set(partnerId, (unreadByPartner.get(partnerId) || 0) + 1);
+      }
     }
 
     const partnerIds = [...latestByPartner.keys()];
     if (!partnerIds.length) return [];
     const { data: profiles, error: profilesError } = await supabase.from('profiles')
-      .select('id, username, public_key, retain_messages, avatar_url, last_seen_at')
+      .select('id, username, public_key, retain_messages, avatar_url, last_seen_at, display_name')
       .in('id', partnerIds);
     if (profilesError) throw profilesError;
     const { data: preferences, error: preferencesError } = await supabase.from('chat_preferences')
@@ -85,6 +94,7 @@ const SoulChat = (() => {
         ...profile,
         chatNickname: nicknameByPartner.get(profile.id) || '',
         lastMessageAt: latestByPartner.get(profile.id),
+        unreadCount: unreadByPartner.get(profile.id) || 0,
       }))
       .sort((a, b) => new Date(b.lastMessageAt) - new Date(a.lastMessageAt));
   }
@@ -123,7 +133,9 @@ const SoulChat = (() => {
   async function openConversationWith(profile) {
     partner = profile;
     conversationKey = await getConversationKeyForProfile(profile);
-    partnerAutoDelete = await getAutoDelete();
+    const autoDeletePref = await getAutoDelete();
+    partnerAutoDelete = autoDeletePref.enabled;
+    partnerAutoDeleteMinutes = autoDeletePref.minutes || AUTO_DELETE_MINUTES;
     rememberContact();
 
     await cleanupExpired();
@@ -212,15 +224,53 @@ const SoulChat = (() => {
     return updated;
   }
 
-  async function decryptRow(row) {
+  // ---- message payloads ----
+  // v2 messages are a JSON envelope so one ciphertext can carry the text
+  // (or caption) PLUS a reply quote. Everything sent by older versions is
+  // plain text and still decrypts the same way — JSON.parse simply fails
+  // and the raw string is used as-is.
+  function parsePayload(raw) {
+    if (!raw) return { text: '', caption: '', reply: null };
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.v === 2) {
+        return {
+          text: typeof parsed.t === 'string' ? parsed.t : '',
+          caption: typeof parsed.c === 'string' ? parsed.c : '',
+          reply: parsed.r && typeof parsed.r.g === 'string' ? parsed.r : null,
+        };
+      }
+    } catch (_) { /* plain text from an older version */ }
+    return { text: raw, caption: raw, reply: null };
+  }
+
+  function buildPayload({ text = '', caption = '', reply = null }) {
+    const envelope = { v: 2 };
+    if (text) envelope.t = text;
+    if (caption) envelope.c = caption;
+    if (reply) envelope.r = reply;
+    return JSON.stringify(envelope);
+  }
+
+  async function decryptRow(row, convKey) {
+    const key = convKey || conversationKey;
     const base = {
       id: row.id, groupId: row.group_id, mine: row.sender_id === me.user.id,
       kind: row.kind, createdAt: row.created_at, deliveredAt: row.delivered_at, readAt: row.read_at,
+      starred: !!row.starred,
     };
     if (row.kind === 'text') {
-      base.text = await SoulCrypto.decryptText(conversationKey, row.ciphertext, row.iv);
+      const parsed = parsePayload(await SoulCrypto.decryptText(key, row.ciphertext, row.iv));
+      base.text = parsed.text;
+      base.reply = parsed.reply;
     } else {
-      base.caption = row.ciphertext ? await SoulCrypto.decryptText(conversationKey, row.ciphertext, row.iv) : '';
+      if (row.ciphertext) {
+        const parsed = parsePayload(await SoulCrypto.decryptText(key, row.ciphertext, row.iv));
+        base.caption = parsed.caption;
+        base.reply = parsed.reply;
+      } else {
+        base.caption = '';
+      }
       base.storagePath = row.storage_path;
       base.fileIv = row.file_iv;
     }
@@ -230,59 +280,85 @@ const SoulChat = (() => {
   // Decrypt one row, falling back to a placeholder instead of throwing.
   // Keeps the chat open when a single media file has already been removed
   // from storage (e.g. the sender's copy expired and was cleaned up).
-  async function decryptRowSafe(row) {
+  async function decryptRowSafe(row, convKey) {
     try {
-      return await decryptRow(await ensureOwnMediaFile(row));
+      return await decryptRow(await ensureOwnMediaFile(row), convKey);
     } catch (_) {
       const base = {
         id: row.id, groupId: row.group_id, mine: row.sender_id === me.user.id,
         kind: row.kind, createdAt: row.created_at, deliveredAt: row.delivered_at, readAt: row.read_at,
-        mediaUnavailable: true,
+        starred: !!row.starred, mediaUnavailable: true,
       };
       if (row.kind !== 'text' && row.ciphertext) {
-        try { base.caption = await SoulCrypto.decryptText(conversationKey, row.ciphertext, row.iv); } catch (_) { /* leave caption empty */ }
+        try { base.caption = parsePayload(await SoulCrypto.decryptText(convKey || conversationKey, row.ciphertext, row.iv)).caption; } catch (_) { /* leave caption empty */ }
       }
       return base;
     }
   }
 
-  async function sendText(text) {
+  async function sendText(text, reply = null) {
+    return deliverTo(partner, { kind: 'text', text, reply });
+  }
+
+  async function sendMedia(file, kind, caption = '', reply = null) {
+    return deliverTo(partner, { kind, file, caption, reply });
+  }
+
+  // Share to any profile WITHOUT switching the open chat (forwarding).
+  async function sendToProfile(profile, { text = '', file = null, kind = 'text', caption = '', reply = null }) {
+    const key = await getConversationKeyForProfile(profile);
+    return deliverTo(profile, { kind, text, file, caption, reply, keyOverride: key });
+  }
+
+  // One delivery path for the open partner and forwarded shares alike:
+  // encrypt with that conversation's key, upload media into MY storage
+  // folder, then let the RPC insert both rows.
+  async function deliverTo(profile, { kind, text = '', caption = '', file = null, reply = null, keyOverride = null }) {
+    if (!profile) throw new Error('No chat is currently open.');
+    const convKey = keyOverride || conversationKey;
+    if (!convKey) throw new Error('Chat is still loading — try again in a second.');
     const groupId = crypto.randomUUID();
-    const enc = await SoulCrypto.encryptText(conversationKey, text);
-    const createdAt = await insertBothCopies({ groupId, kind: 'text', captionCiphertextB64: enc.ciphertextB64, captionIvB64: enc.ivB64, myStoragePath: null, fileIvB64: null });
+    const payload = buildPayload({ text, caption, reply });
+
+    let myStoragePath = null;
+    let fileIvB64 = null;
+    if (file) {
+      const arrayBuffer = await file.arrayBuffer();
+      const { ciphertext, ivB64 } = await SoulCrypto.encryptFile(convKey, arrayBuffer);
+      fileIvB64 = ivB64;
+      myStoragePath = `${me.user.id}/${groupId}.bin`;
+      const up = await supabase.storage.from('encrypted-media').upload(myStoragePath, new Blob([ciphertext]), { upsert: false });
+      if (up.error) throw up.error;
+    }
+    const enc = await SoulCrypto.encryptText(convKey, payload);
+    const createdAt = await insertBothCopies({
+      profile, groupId, kind,
+      captionCiphertextB64: enc.ciphertextB64, captionIvB64: enc.ivB64,
+      myStoragePath, fileIvB64,
+    });
     return { groupId, createdAt };
   }
 
-  async function sendMedia(file, kind, caption = '') {
-    const groupId = crypto.randomUUID();
-    const arrayBuffer = await file.arrayBuffer();
-    const { ciphertext, ivB64: fileIvB64 } = await SoulCrypto.encryptFile(conversationKey, arrayBuffer);
-
-    const myPath = `${me.user.id}/${groupId}.bin`;
-    const blob = new Blob([ciphertext]);
-
-    const up = await supabase.storage.from('encrypted-media').upload(myPath, blob, { upsert: false });
-    if (up.error) throw up.error;
-
-    const capEnc = caption ? await SoulCrypto.encryptText(conversationKey, caption) : { ciphertextB64: '', ivB64: SoulCrypto.bufToB64(SoulCrypto.randomBytes(12)) };
-    const createdAt = await insertBothCopies({ groupId, kind, captionCiphertextB64: capEnc.ciphertextB64, captionIvB64: capEnc.ivB64, myStoragePath: myPath, fileIvB64 });
-    return { groupId, createdAt };
-  }
-
-  async function insertBothCopies({ groupId, kind, captionCiphertextB64, captionIvB64, myStoragePath, fileIvB64 }) {
+  async function insertBothCopies({ profile, groupId, kind, captionCiphertextB64, captionIvB64, myStoragePath, fileIvB64 }) {
     const { data: authData, error: authError } = await supabase.auth.getSession();
     if (authError) throw authError;
     const authenticatedUserId = authData.session?.user.id;
     if (authenticatedUserId !== me.user.id) {
       throw new Error('This tab is signed in as a different user. Refresh and sign in again before sending.');
     }
-    if (partner.id === authenticatedUserId) {
+    if (profile.id === authenticatedUserId) {
       throw new Error('You cannot send a message to your own account. Check the selected chat.');
     }
-    const deleteAt = partnerAutoDelete ? new Date(Date.now() + AUTO_DELETE_MINUTES * 60 * 1000).toISOString() : null;
+    let minutes = AUTO_DELETE_MINUTES;
+    let enabled = !me.profile.retain_messages;
+    if (partner && profile.id === partner.id) {
+      minutes = partnerAutoDeleteMinutes;
+      enabled = partnerAutoDelete;
+    }
+    const deleteAt = enabled ? new Date(Date.now() + minutes * 60 * 1000).toISOString() : null;
     const { data: rpcCreatedAt, error } = await supabase.rpc('send_chat_message_copies', {
       p_group_id: groupId,
-      p_receiver_id: partner.id,
+      p_receiver_id: profile.id,
       p_kind: kind,
       p_ciphertext: captionCiphertextB64,
       p_iv: captionIvB64,
@@ -344,7 +420,7 @@ const SoulChat = (() => {
     const groupIds = unread.map(row => row.group_id);
     const { error: receiptError } = await supabase.rpc('mark_chat_messages_read', { p_group_ids: groupIds });
     if (receiptError) throw receiptError;
-    const deleteAt = partnerAutoDelete ? new Date(Date.now() + AUTO_DELETE_MINUTES * 60 * 1000).toISOString() : null;
+    const deleteAt = partnerAutoDelete ? new Date(Date.now() + partnerAutoDeleteMinutes * 60 * 1000).toISOString() : null;
     const { error: updateError } = await supabase.from('messages')
       .update({ delete_at: deleteAt })
       .in('id', unread.map(row => row.id));
@@ -397,6 +473,12 @@ const SoulChat = (() => {
           detail: { storagePath: payload.new.storage_path, fileIv: payload.new.file_iv },
         }));
       })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'message_reactions' }, (payload) => {
+        const row = payload.new || payload.old;
+        if (row && row.group_id) {
+          document.dispatchEvent(new CustomEvent('soul:reaction-updated', { detail: { groupId: row.group_id } }));
+        }
+      })
       .subscribe((status) => {
         if (status === 'SUBSCRIBED' && partner) {
           markIncomingAsRead().catch(error => document.dispatchEvent(new CustomEvent('soul:error', { detail: error })));
@@ -412,22 +494,132 @@ const SoulChat = (() => {
 
   async function getAutoDelete() {
     const { data, error } = await supabase.from('chat_preferences')
-      .select('auto_delete')
+      .select('auto_delete, auto_delete_minutes')
       .eq('owner_id', me.user.id)
       .eq('partner_id', partner.id)
       .maybeSingle();
     if (error) throw error;
-    return data ? data.auto_delete : !me.profile.retain_messages;
+    return {
+      enabled: data ? data.auto_delete : !me.profile.retain_messages,
+      minutes: (data && data.auto_delete_minutes) || AUTO_DELETE_MINUTES,
+    };
   }
 
-  async function setAutoDelete(enabled) {
+  async function setAutoDelete(enabled, minutes = AUTO_DELETE_MINUTES) {
     const { error } = await supabase.from('chat_preferences').upsert({
       owner_id: me.user.id,
       partner_id: partner.id,
       auto_delete: enabled,
+      auto_delete_minutes: minutes,
     }, { onConflict: 'owner_id,partner_id' });
     if (error) throw error;
     partnerAutoDelete = enabled;
+    partnerAutoDeleteMinutes = minutes;
+  }
+
+  // ---- starred messages ----
+  async function setStarred(rowId, starred) {
+    const { error } = await supabase.from('messages')
+      .update({ starred })
+      .eq('id', rowId)
+      .eq('owner_id', me.user.id);
+    if (error) throw error;
+  }
+
+  // Starred messages across ALL chats. Each partner's rows decrypt with
+  // that conversation's key, so the partner profile rides along.
+  async function fetchStarredMessages() {
+    const { data, error } = await supabase.from('messages')
+      .select('*')
+      .eq('owner_id', me.user.id)
+      .eq('starred', true)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    const byPartner = new Map();
+    for (const row of data || []) {
+      const otherId = row.sender_id === me.user.id ? row.receiver_id : row.sender_id;
+      if (!byPartner.has(otherId)) byPartner.set(otherId, []);
+      byPartner.get(otherId).push(row);
+    }
+    if (!byPartner.size) return [];
+    const { data: profiles, error: profilesError } = await supabase.from('profiles')
+      .select('id, username, display_name, avatar_url')
+      .in('id', [...byPartner.keys()]);
+    if (profilesError) throw profilesError;
+    const out = [];
+    for (const profile of profiles || []) {
+      const key = await getConversationKeyForProfile(profile);
+      for (const row of byPartner.get(profile.id)) {
+        try {
+          out.push({ ...(await decryptRow(row, key)), partner: profile });
+        } catch (_) { /* skip a row that can no longer be decrypted */ }
+      }
+    }
+    return out.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  }
+
+  // Remove MY copy of one message (long-press → delete). The other
+  // account's copy is untouched, exactly like clearing a whole chat.
+  async function deleteMessage(groupId) {
+    const { data, error } = await supabase.from('messages')
+      .delete()
+      .eq('owner_id', me.user.id)
+      .eq('group_id', groupId)
+      .select('id, storage_path');
+    if (error) throw error;
+    const ownPaths = (data || []).map(row => row.storage_path).filter(p => p && p.startsWith(`${me.user.id}/`));
+    if (ownPaths.length) await supabase.storage.from('encrypted-media').remove(ownPaths).catch(() => {});
+  }
+
+  // ---- reactions ----
+  // emoji === null removes my reaction (toggle-off).
+  async function setReaction(groupId, emoji) {
+    await supabase.from('message_reactions')
+      .delete()
+      .eq('group_id', groupId)
+      .eq('reactor_id', me.user.id);
+    if (!emoji) return null;
+    const { error } = await supabase.from('message_reactions').insert({
+      group_id: groupId,
+      reactor_id: me.user.id,
+      emoji,
+    });
+    if (error) throw error;
+    return emoji;
+  }
+
+  async function fetchReactions(groupIds) {
+    if (!groupIds.length) return new Map();
+    const { data, error } = await supabase.from('message_reactions')
+      .select('group_id, reactor_id, emoji')
+      .in('group_id', groupIds);
+    if (error) throw error;
+    const map = new Map();
+    for (const row of data || []) {
+      if (!map.has(row.group_id)) map.set(row.group_id, []);
+      map.get(row.group_id).push({ reactorId: row.reactor_id, emoji: row.emoji });
+    }
+    return map;
+  }
+
+  // ---- typing indicator (realtime broadcast, never touches the DB) ----
+  function startTypingChannel() {
+    if (typingChannel) return;
+    typingChannel = supabase.channel('soul-typing', { config: { broadcast: { self: false } } })
+      .on('broadcast', { event: 'typing' }, ({ payload }) => {
+        if (payload && payload.to === me.user.id && payload.from) {
+          document.dispatchEvent(new CustomEvent('soul:partner-typing', { detail: { from: payload.from } }));
+        }
+      })
+      .subscribe();
+  }
+
+  function sendTyping(toId) {
+    if (!typingChannel || !toId) return;
+    const now = Date.now();
+    if (now - lastTypingSent < 2000) return; // throttle to one ping per 2 s
+    lastTypingSent = now;
+    typingChannel.send({ type: 'broadcast', event: 'typing', payload: { from: me.user.id, to: toId } });
   }
 
   async function uploadChatBackground(file) {
@@ -490,6 +682,15 @@ const SoulChat = (() => {
     me.profile.avatar_url = path;
   }
 
+  async function updateOwnProfile({ display_name, bio }) {
+    const { error } = await supabase.from('profiles')
+      .update({ display_name, bio })
+      .eq('id', me.user.id);
+    if (error) throw error;
+    me.profile.display_name = display_name;
+    me.profile.bio = bio;
+  }
+
   async function getNickname() {
     const { data, error } = await supabase.from('chat_preferences')
       .select('partner_nickname')
@@ -511,11 +712,12 @@ const SoulChat = (() => {
     return nickname.trim();
   }
 
-  return { 
-    init, lookupProfileByUsername, fetchRecentChats, subscribeHome, openConversationWith, closeConversation, 
-    fetchHistory, clearConversation, sendText, sendMedia, downloadAndDecryptMedia, setRetention, 
-    uploadChatBackground, getChatBackground, uploadAvatar, setNickname, getNickname,
-    getAutoDelete, setAutoDelete,
+  return {
+    init, lookupProfileByUsername, fetchRecentChats, subscribeHome, openConversationWith, closeConversation,
+    fetchHistory, clearConversation, sendText, sendMedia, sendToProfile, downloadAndDecryptMedia, setRetention,
+    uploadChatBackground, getChatBackground, uploadAvatar, updateOwnProfile, setNickname, getNickname,
+    getAutoDelete, setAutoDelete, setStarred, fetchStarredMessages, deleteMessage,
+    setReaction, fetchReactions, startTypingChannel, sendTyping,
     getConversationKeyForProfile,
     getConversationKey: () => conversationKey
   };

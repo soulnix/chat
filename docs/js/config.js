@@ -9,5 +9,17 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 // How long an auto-delete message copy remains available.
 const AUTO_DELETE_MINUTES = 10;
 
+// Choices for the per-chat auto-delete duration (minutes).
+const AUTO_DELETE_OPTIONS = [10, 60, 1440];
+
 // How long (in hours) a status/story stays visible.
 const STATUS_LIFETIME_HOURS = 24;
+
+// Apply the saved theme BEFORE first paint (this file loads before
+// app.js) so dark mode never flashes light. 'system' follows the OS.
+try {
+  const saved = localStorage.getItem('soulnix-theme') || 'light';
+  const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const theme = saved === 'system' ? (prefersDark ? 'dark' : 'light') : saved;
+  document.documentElement.dataset.theme = theme;
+} catch (_) { /* localStorage unavailable — light theme is the default */ }

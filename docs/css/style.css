@@ -10,6 +10,19 @@
   --radius: 16px;
 }
 
+/* Dark mode — same variable names, night-friendly values.
+   config.js sets <html data-theme="dark"> before first paint. */
+[data-theme="dark"] {
+  --neu-base: #1B1D24;
+  --neu-blue: #2E4258;
+  --neu-pink: #4A2E44;
+  --neu-light: #262A36;
+  --neu-dark: #101116;
+  --neu-accent: #9A8CF2;
+  --neu-heading: #F2F2F7;
+  --neu-text: #B8B8C4;
+}
+
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body {
@@ -24,7 +37,11 @@ body {
 #app {
   width: 100%;
   max-width: 480px;
+  /* 100vh is a fallback for browsers without dvh; 100dvh tracks the
+     REAL visible viewport on mobile (URL bar, keyboard), so the chat
+     composer is never pushed below the screen edge. */
   height: 100vh;
+  height: 100dvh;
   position: relative;
   background: var(--neu-base);
   display: flex;
@@ -366,6 +383,208 @@ header .subtitle { font-size: 12px; color: var(--neu-text); }
 .composer-actions { display: flex; gap: 12px; padding: 16px 20px 0; }
 .composer-actions #btn-status-post { flex: 1; }
 .composer-hint { padding: 8px 20px 16px; margin: 0; }
-/* Green ring on my avatar while I have an active status (WhatsApp-style) */
-.my-status-avatar.has-status { border: 3px solid #2e9b55; }
-.my-status-plus { cursor: pointer; }
+
+/* ===================== NEW FEATURES ===================== */
+
+/* Date separators */
+.date-sep {
+  align-self: center; font-size: 12px; font-weight: 600; color: var(--neu-text);
+  background: var(--neu-base); padding: 4px 14px; border-radius: 999px;
+  box-shadow: inset 2px 2px 6px var(--neu-dark), inset -2px -2px 6px var(--neu-light);
+}
+
+/* Reply: quote inside a bubble + the bar above the composer */
+.reply-quote {
+  border-left: 3px solid var(--neu-accent); background: rgba(123, 104, 238, 0.14);
+  border-radius: 8px; padding: 6px 10px; margin-bottom: 6px;
+}
+.reply-quote-text {
+  font-size: 12px; color: var(--neu-text);
+  white-space: pre-wrap; word-break: break-word;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.reply-bar {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  background: var(--neu-base); border-radius: 12px; padding: 8px 10px; margin-bottom: 10px;
+  box-shadow: inset 3px 3px 8px var(--neu-dark), inset -3px -3px 8px var(--neu-light);
+}
+.reply-bar[hidden] { display: none; }
+.reply-bar-text {
+  flex: 1; min-width: 0; font-size: 13px; color: var(--neu-text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Reactions */
+.reactions-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.reactions-row[hidden] { display: none; }
+.reaction-chip {
+  background: var(--neu-base); border-radius: 999px; padding: 2px 8px; font-size: 13px;
+  box-shadow: inset 2px 2px 5px var(--neu-dark), inset -2px -2px 5px var(--neu-light);
+}
+.reaction-chip.mine { box-shadow: 0 0 0 2px var(--neu-accent); }
+.reaction-picker { display: flex; gap: 10px; padding: 6px 4px 2px; }
+.reaction-choice { font-size: 24px; padding: 8px 10px; }
+
+/* Star chip + flash highlight for search jumps */
+.star-chip { position: absolute; margin-left: 6px; font-size: 12px; }
+.bubble { position: relative; }
+.bubble-row.flash .bubble { box-shadow: 0 0 0 3px var(--neu-accent); }
+
+/* Links inside messages */
+.msg-link { color: var(--neu-accent); text-decoration: underline; word-break: break-all; }
+
+/* Voice notes */
+.audio-note { width: 220px; max-width: 100%; display: block; }
+
+/* Composer extras: emoji panel, mic, recording bar */
+.composer { flex-wrap: wrap; padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
+.emoji-panel-holder { width: 100%; }
+.emoji-panel-holder[hidden], #emoji-panel[hidden] { display: none; }
+#emoji-panel { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; padding: 8px; max-height: 210px; overflow-y: auto; }
+.emoji-cell { font-size: 20px; padding: 4px 0; box-shadow: none; background: transparent; }
+.mic-btn { background: var(--neu-accent); color: #fff; }
+#record-bar { padding: 2px 0; }
+.record-dot {
+  width: 12px; height: 12px; border-radius: 50%; background: #ef4444;
+  animation: record-pulse 1s infinite;
+}
+@keyframes record-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+.record-timer { font-weight: 700; color: var(--neu-heading); min-width: 44px; }
+.record-hint { flex: 1; font-size: 13px; color: var(--neu-text); }
+#record-bar button { padding: 8px 14px; }
+
+/* Search bar + results */
+.search-bar {
+  display: flex; align-items: center; gap: 8px; padding: 10px 16px;
+  background: var(--neu-base); z-index: 12;
+  box-shadow: 0 8px 16px -8px var(--neu-dark);
+}
+.search-bar[hidden] { display: none; }
+.search-results {
+  position: absolute; top: 130px; left: 8px; right: 8px; z-index: 25;
+  background: var(--neu-base); border-radius: 12px; max-height: 320px; overflow-y: auto;
+  box-shadow: -6px -6px 18px var(--neu-light), 6px 6px 18px var(--neu-dark);
+  display: flex; flex-direction: column; padding: 6px;
+}
+.search-results[hidden] { display: none; }
+.search-result {
+  border-radius: 8px; box-shadow: none; background: transparent;
+  text-align: left; font-size: 13px; padding: 10px 12px; color: var(--neu-text);
+}
+.search-result:active { background: var(--neu-blue); }
+
+/* Archived section */
+.archived-toggle {
+  align-self: flex-start; padding: 10px 16px; font-size: 13px; color: var(--neu-text);
+}
+.archived-arrow { display: inline-block; }
+
+/* Unread badges */
+.recent-chat-right { display: flex; align-items: center; gap: 8px; }
+.row-mute-icon { font-size: 13px; }
+.unread-badge {
+  background: #ef4444; color: #fff; font-size: 11px; font-weight: 700;
+  min-width: 20px; height: 20px; border-radius: 999px;
+  display: flex; align-items: center; justify-content: center; padding: 0 6px;
+}
+.tab-badge {
+  position: absolute; top: 0; right: calc(50% - 30px);
+  background: #ef4444; color: #fff; font-size: 10px; font-weight: 700;
+  min-width: 16px; height: 16px; border-radius: 999px; padding: 0 4px;
+  display: flex; align-items: center; justify-content: center;
+}
+.tab-badge[hidden] { display: none; }
+.tab-btn { position: relative; }
+
+/* Typing indicator in the chat header */
+#chat-retention-note.typing { color: var(--neu-accent); font-weight: 600; }
+
+/* Bottom action sheet */
+#sheet-overlay {
+  position: absolute; inset: 0; z-index: 90; display: none;
+  align-items: flex-end; background: rgba(0, 0, 0, 0.45);
+}
+#sheet-overlay.active { display: flex; }
+.sheet-card {
+  width: 100%; background: var(--neu-base); border-radius: 20px 20px 0 0;
+  padding: 14px 14px calc(14px + env(safe-area-inset-bottom));
+  display: flex; flex-direction: column; gap: 8px; max-height: 70%; overflow-y: auto;
+}
+.sheet-title { font-weight: 700; color: var(--neu-heading); padding: 2px 8px 6px; }
+.sheet-item {
+  border-radius: 12px; box-shadow: none; background: transparent;
+  text-align: left; font-weight: 500; padding: 12px 14px; color: var(--neu-text);
+}
+.sheet-item:active { background: var(--neu-blue); }
+.sheet-item.danger { color: #ef4444; }
+.forward-list, .viewers-list { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; }
+.viewer-row { display: flex; justify-content: space-between; gap: 12px; padding: 10px 8px; }
+.viewer-row span:first-child { font-weight: 600; color: var(--neu-heading); }
+.viewer-time { color: var(--neu-text); font-size: 12px; }
+
+/* Starred messages screen */
+.starred-body {
+  flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px;
+  color: var(--neu-text); font-size: 14px;
+}
+.starred-row {
+  display: flex; flex-direction: column; gap: 4px; align-items: flex-start;
+  padding: 12px 16px; border-radius: var(--radius); text-align: left;
+}
+.starred-name { font-weight: 700; color: var(--neu-accent); font-size: 13px; }
+.starred-text { color: var(--neu-heading); word-break: break-word; }
+.starred-time { font-size: 11px; color: var(--neu-text); }
+
+/* Camera modal */
+#camera-modal {
+  position: absolute; inset: 0; z-index: 110; display: none;
+  background: #000; flex-direction: column; justify-content: flex-end;
+}
+#camera-modal.active { display: flex; }
+#camera-preview { flex: 1; object-fit: cover; width: 100%; min-height: 0; }
+.camera-controls {
+  display: flex; align-items: center; justify-content: space-around;
+  padding: 16px 16px calc(20px + env(safe-area-inset-bottom));
+  background: rgba(0, 0, 0, 0.55);
+}
+.camera-controls .icon-btn { color: #fff; background: rgba(255, 255, 255, 0.2); box-shadow: none; width: 44px; height: 44px; }
+.capture-btn {
+  width: 68px; height: 68px; border-radius: 50%; padding: 0;
+  background: #fff; box-shadow: 0 0 0 5px rgba(255, 255, 255, 0.35), 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+/* Full-screen media viewer (chat photos/videos) */
+#media-viewer {
+  position: absolute; inset: 0; z-index: 100; display: none;
+  background: #12161F; align-items: center; justify-content: center;
+}
+#media-viewer.active { display: flex; }
+#media-viewer-close {
+  position: absolute; top: 14px; right: 14px; z-index: 2;
+  color: #fff; background: rgba(255, 255, 255, 0.15); box-shadow: none;
+}
+#media-viewer-stage { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+#media-viewer-stage img, #media-viewer-stage video { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+/* Status viewer footer (reply + viewers) */
+.story-footer {
+  position: absolute; bottom: 0; left: 0; right: 0; z-index: 5;
+  display: flex; justify-content: center; gap: 10px;
+  padding: 12px 16px calc(14px + env(safe-area-inset-bottom));
+}
+.story-chip {
+  background: rgba(255, 255, 255, 0.18); color: #fff; font-size: 13px;
+  padding: 10px 18px; box-shadow: none; backdrop-filter: blur(4px);
+}
+.story-chip[hidden] { display: none; }
+
+/* Profile bio */
+.profile-bio {
+  margin-top: 10px; max-width: 320px; text-align: center;
+  font-size: 14px; line-height: 1.5; color: var(--neu-text);
+}
+
+/* Dark-mode touches for hardcoded-color surfaces */
+[data-theme="dark"] .spinner-overlay { background: rgba(16, 17, 22, 0.85); }
+[data-theme="dark"] .bubble .meta { color: rgba(255, 255, 255, 0.45); }
+[data-theme="dark"] .story-chip { background: rgba(255, 255, 255, 0.14); }

@@ -110,7 +110,7 @@ const SoulStatus = (() => {
     return out;
   }
 
-    // My own posted statuses for one partner — decrypted with the same
+  // My own posted statuses for one partner — decrypted with the same
   // conversation key, so the uploader can view their own status too.
   async function fetchOwnStatusesFor(profile, key) {
     const nowIso = new Date().toISOString();
@@ -126,7 +126,8 @@ const SoulStatus = (() => {
     for (const row of data) {
       const item = mapRow(row);
       if (row.kind === 'text') {
-        item.text = await SoulCrypto.decryptText(key, row.ciphertext, row.iv);
+        try { item.text = await SoulCrypto.decryptText(key, row.ciphertext, row.iv); }
+        catch (_) { item.text = '[undecryptable status]'; }
       } else {
         item.storagePath = row.storage_path;
         item.fileIv = row.iv;
@@ -141,6 +142,39 @@ const SoulStatus = (() => {
     }
     return out;
   }
+
+  // Who viewed MY statuses: rows I own carry the viewer id + viewed time.
+  async function fetchOwnViewers() {
+    const nowIso = new Date().toISOString();
+    const { data, error } = await supabase
+      .from('statuses')
+      .select('viewer_id, viewed_at')
+      .eq('owner_id', me.user.id)
+      .gt('expires_at', nowIso)
+      .not('viewed_at', 'is', null);
+    if (error) throw error;
+    const byViewer = new Map();
+    for (const row of data || []) {
+      const entry = byViewer.get(row.viewer_id) || { count: 0, lastViewedAt: null };
+      entry.count += 1;
+      if (!entry.lastViewedAt || new Date(row.viewed_at) > new Date(entry.lastViewedAt)) {
+        entry.lastViewedAt = row.viewed_at;
+      }
+      byViewer.set(row.viewer_id, entry);
+    }
+    if (!byViewer.size) return [];
+    const { data: profiles, error: profilesError } = await supabase
+      .from('profiles')
+      .select('id, username, display_name, avatar_url')
+      .in('id', [...byViewer.keys()]);
+    if (profilesError) throw profilesError;
+    return (profiles || []).map(profile => ({
+      profile,
+      count: byViewer.get(profile.id).count,
+      lastViewedAt: byViewer.get(profile.id).lastViewedAt,
+    })).sort((a, b) => new Date(b.lastViewedAt) - new Date(a.lastViewedAt));
+  }
+
   async function markViewed(statusId) {
     const { error } = await supabase.from('statuses')
       .update({ viewed_at: new Date().toISOString() })
@@ -158,5 +192,5 @@ const SoulStatus = (() => {
     return SoulCrypto.decryptFile(key, ciphertextBuf, fileIvB64);
   }
 
-  return { init, postToPartners, fetchStatusesFor, fetchOwnStatusesFor, markViewed, downloadAndDecryptMedia, cleanupExpired };
+  return { init, postToPartners, fetchStatusesFor, fetchOwnStatusesFor, fetchOwnViewers, markViewed, downloadAndDecryptMedia, cleanupExpired };
 })();
