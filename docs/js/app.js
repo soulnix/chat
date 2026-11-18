@@ -1190,8 +1190,8 @@
   // WhatsApp-style composer: mic when empty, send arrow when typing.
   function updateComposerButtons() {
     const hasText = $('#msg-input').value.trim().length > 0;
-    $('#btn-send').hidden = hasText;
-    $('#btn-mic').hidden = !hasText;
+    $('#btn-send').hidden = !hasText;
+    $('#btn-mic').hidden = hasText;
   }
 
   $('#btn-emoji').onclick = () => {
