@@ -1256,7 +1256,7 @@
     $('#record-bar').hidden = true;
     $('#composer-main').hidden = false;
     if (!result) return;
-    if (result.seconds < 1 || result.blob.size < 1000) { toast('Recording was too short.'); return; }
+    if (result.blob.size < 200) { toast('Recording was too short.'); return; }
     const file = new File([result.blob], 'voice-note.webm', { type: result.blob.type || 'audio/webm' });
     const quote = takeReplyQuote();
     showSpinner(true);
