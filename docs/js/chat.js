@@ -611,15 +611,26 @@ const SoulChat = (() => {
           document.dispatchEvent(new CustomEvent('soul:partner-typing', { detail: { from: payload.from } }));
         }
       })
+      .on('broadcast', { event: 'stop_typing' }, ({ payload }) => {
+        if (payload && payload.to === me.user.id && payload.from) {
+          document.dispatchEvent(new CustomEvent('soul:partner-stop-typing', { detail: { from: payload.from } }));
+        }
+      })
       .subscribe();
   }
 
   function sendTyping(toId) {
     if (!typingChannel || !toId) return;
     const now = Date.now();
-    if (now - lastTypingSent < 2000) return; // throttle to one ping per 2 s
+    if (now - lastTypingSent < 1000) return; // throttle to one ping per 2 s
     lastTypingSent = now;
     typingChannel.send({ type: 'broadcast', event: 'typing', payload: { from: me.user.id, to: toId } });
+    
+  }
+  function stopTyping(toId) {
+  if (!typingChannel || !toId) return;
+    lastTypingSent =0;
+    typingChannel.send({ type: 'broadcast', event: 'stop_typing', payload: { from: me.user.id, to: toId } });
   }
 
   async function uploadChatBackground(file) {
